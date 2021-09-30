@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python2.7
 import argparse
 import logging
 import select
@@ -33,14 +33,21 @@ def createlogger(name, debug=False):
 g_logger = createlogger(__name__, debug=True)
 
 
-def myhex(num) -> str:
+def myhex(num):
+    s = hex(num).replace('0x', '')  # remove '0x' in front
+    if (len(s) == 1) or (len(s) == 3):  # prepend leading zero
+        s = '0' + s
+    return s
+
+def hexp27(num):
     s = hex(num).replace('0x', '')  # remove '0x' in front
     if (len(s) == 1) or (len(s) == 3):  # prepend leading zero
         s = '0' + s
     return s
 
 
-def mysend_fully(sock: socket.socket, msg: bytes):
+
+def mysend_fully(sock, msg):
     totalsent = 0
     msglen = len(msg)
     while totalsent < msglen:
@@ -92,8 +99,8 @@ class SocksClientException(RuntimeError):
 
 
 class SocksClientThread(threading.Thread):
-    def __init__(self, client_sock: socket.socket, client_address: tuple, daemon=None, dbg_output: bool=False):
-        super(SocksClientThread, self).__init__(daemon=daemon)
+    def __init__(self, client_sock, client_address, dbg_output=False):
+        super(SocksClientThread, self).__init__()
         self.client_sock = client_sock
         self.client_address = client_address
         client_name = str(client_address[0]) + ':' + str(client_address[1])
@@ -132,7 +139,7 @@ class SocksClientThread(threading.Thread):
 
     def recv_socks_version(self):
         b = self.client_sock.recv(1)  # protocol version, 1 byte
-        socks_version = int(b[0])
+        socks_version = ord(b[0])
         if socks_version != 5:
             self.reply_method_selection(Socks5Const.AUTH_METHOD_NO_ACCEPTABLE_METHODS)
             raise SocksClientException('Invalid SOCKS version from client!')
@@ -141,9 +148,9 @@ class SocksClientThread(threading.Thread):
         b4 = self.client_sock.recv(4)
         return b4
 
-    def recv_hostname(self) -> str:
+    def recv_hostname(self):
         hn_len = self.client_sock.recv(1)
-        ihn_len = int(hn_len[0])
+        ihn_len = ord(hn_len[0])
         hn = self.client_sock.recv(ihn_len)
         return hn.decode(encoding='utf-8')
 
@@ -151,10 +158,10 @@ class SocksClientThread(threading.Thread):
         b16 = self.client_sock.recv(16)
         return b16
 
-    def recv_port(self) -> int:
+    def recv_port(self):
         b2 = self.client_sock.recv(2)
         b = list(b2)  # convert to list of integers
-        port = b[0]*256 + b[1]  # [1, 187] => 1*256 + 187 = 443
+        port = ord(b[0])*256 + ord(b[1])  # [1, 187] => 1*256 + 187 = 443
         return port
 
     def receive_client_methods(self):
@@ -167,7 +174,7 @@ class SocksClientThread(threading.Thread):
         #           +----+----------+----------+
         self.recv_socks_version()
         b = self.client_sock.recv(1)  # nmethods, 1 byte
-        nmethods = int(b[0])
+        nmethods = ord(b[0])
         # self.logger.debug('Received hello, Nmethods={0}'.format(nmethods))
         req_methods = []
         for i in range(0, nmethods):
@@ -246,7 +253,7 @@ class SocksClientThread(threading.Thread):
             self.remote_sock.close()
         try:
             self.logger.debug(' ... Connecting to: {0}...'.format(self.dest_addr))
-            self.remote_sock = socket.create_connection(self.dest_addr, timeout=10)
+            self.remote_sock = socket.create_connection(self.dest_addr, timeout=1000)
         except socket.timeout:
             self.reply_client_request_err(Socks5Const.REP_CONN_REFUSED)
             raise SocksClientException('Dest addr {0} connect timeout!'.format(self.dest_addr))
@@ -261,16 +268,16 @@ class SocksClientThread(threading.Thread):
         rsock_addr_ip = socket.inet_aton(rsock_addr[0])  # converts IP to bytes representation
         # ^^ socket.inet_aton('127.0.0.1')  =>  b'\x7f\x00\x00\x01'
         local_port = rsock_addr[1]  # port as integer
-        rsock_port = bytes.fromhex(myhex(local_port // 256) +  # higher byte
+        rsock_port = bytearray.fromhex(myhex(local_port // 256) +  # higher byte
                                    myhex(local_port % 256))    # lower byte
         self.reply_client_request(Socks5Const.REP_OK, Socks5Const.ATYPE_IPV4,
                                   rsock_addr_ip, rsock_port)
         self.logger.info('  Successfully created proxy connection to {0}.'.format(self.dest_addr))
 
-    def reply_client_request_err(self, rep_err_code: bytes):
+    def reply_client_request_err(self, rep_err_code):
         self.reply_client_request(rep_err_code, Socks5Const.ATYPE_IPV4, b'\x00\x00\x00\x00', b'\x00\x00')
 
-    def reply_client_request(self, rep_code: bytes, atyp: bytes, bnd_addr: bytes, bnd_port: bytes):
+    def reply_client_request(self, rep_code, atyp, bnd_addr, bnd_port):
         # +----+-----+-------+------+----------+----------+
         # |VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
         # +----+-----+-------+------+----------+----------+
@@ -358,7 +365,7 @@ class SocksServer:
         self.should_exit = False
         self.dbg_output = False
 
-    def parse_args(self) -> bool:
+    def parse_args(self):
         ap = argparse.ArgumentParser(description='Socks5 proxy server. It can be configured only through '
                                                  'command-line parameters.')
         ap.add_argument('--version', action='version', version='%(prog)s v0.1')
@@ -405,7 +412,7 @@ class SocksServer:
                     # by default accepted client socket inherits listening socket timeout settings
                     # reset it to default
                     client_sock.settimeout(None)  # blocking mode
-                    sct = SocksClientThread(client_sock, client_address, daemon=False, dbg_output=self.dbg_output)
+                    sct = SocksClientThread(client_sock, client_address, dbg_output=self.dbg_output)
                     sct.start()
                 else:
                     # just close client socket
